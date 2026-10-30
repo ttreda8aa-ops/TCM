@@ -485,6 +485,20 @@ const Store = {
   },
 
   async getSettings() {
+    if (AppwriteSync.isAvailable()) {
+      try {
+        const cloudDocs = await AppwriteSync.listDocuments('settings');
+        if (cloudDocs && cloudDocs.length > 0) {
+          const doc = cloudDocs[0];
+          const parsed = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+          const merged = { ...DEFAULT_SETTINGS, ...parsed };
+          localRealm.write(r => r.setAll(Schemas.Settings, [merged]));
+          return merged;
+        }
+      } catch (e) {
+        console.warn('Appwrite settings fetch fallback:', e.message);
+      }
+    }
     const list = localRealm.objects(Schemas.Settings).all();
     return list[0] ? list[0] : { ...DEFAULT_SETTINGS };
   },
@@ -496,6 +510,23 @@ const Store = {
       r.setAll(Schemas.Settings, [updated]);
     });
     window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'settings' } }));
+
+    // Sync to Appwrite Cloud
+    if (AppwriteSync.isAvailable()) {
+      try {
+        const cloudDocs = await AppwriteSync.listDocuments('settings');
+        const payload = { data: JSON.stringify(updated) };
+        if (cloudDocs && cloudDocs.length > 0) {
+          const docId = cloudDocs[0].$id;
+          await AppwriteSync.updateDocument('settings', docId, payload);
+        } else {
+          await AppwriteSync.createDocument('settings', 'app_settings', payload);
+        }
+      } catch (err) {
+        console.warn('Appwrite settings sync error:', err.message);
+      }
+    }
+
     return updated;
   },
 
