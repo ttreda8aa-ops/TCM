@@ -93,11 +93,15 @@ const App = {
 
   handleInternalSync(detail) {
     const hash = window.location.hash || '#/';
-    if (hash.startsWith('#/student') && detail && detail.shift) {
-      const currentStudentShift = hash.split('/')[2];
-      if (detail.shift === currentStudentShift) {
-        window.Student.render(this.container, currentStudentShift);
-      }
+    if (hash === '#/' || hash === '' || hash === '#') {
+      window.Landing.render(this.container);
+    } else if (hash.startsWith('#/student')) {
+      const currentStudentShift = hash.split('/')[2] || 'morning';
+      window.Student.render(this.container, currentStudentShift);
+    } else if (hash === '#/rep/dashboard') {
+      window.Rep.renderDashboard(this.container);
+    } else if (hash === '#/admin') {
+      window.Admin.render(this.container);
     }
   }
 };
