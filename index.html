@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" class="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>المنصة الجامعية الموحدة</title>
+  <meta name="description" content="منصة تعليمية جامعية متكاملة لإدارة الجداول الدراسية والامتحانات والتكاليف الأكاديمية" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <!-- Google Fonts: Cairo, Tajawal, JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS CDN with darkMode class -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              cyan: '#0284c7',
+              purple: '#9333ea'
+            }
+          },
+          fontFamily: {
+            arabic: ['Cairo', 'Tajawal', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace']
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- Custom CSS for Theme Switching & Smooth Animations -->
+  <link rel="stylesheet" href="css/custom.css" />
+</head>
+<body class="bg-[#f8fafc] dark:bg-[#0a0a14] text-gray-900 dark:text-gray-100 min-h-screen selection:bg-cyan-500/20 selection:text-cyan-700">
+  <!-- SPA Main Application Root -->
+  <div id="app-root"></div>
+
+  <!-- External Libraries for Schedule Export & Appwrite Cloud -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/appwrite@14.0.1"></script>
+
+  <!-- Scripts in dependency order -->
+  <script src="js/appwrite-client.js"></script>
+  <script src="js/notifications.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/landing.js"></script>
+  <script src="js/student.js"></script>
+  <script src="js/rep.js"></script>
+  <script src="js/admin.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
