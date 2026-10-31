@@ -469,7 +469,7 @@ const Rep = {
                 <div class="flex-1">
                   <div class="flex items-center gap-2 mb-1.5 flex-wrap">
                     <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-300 dark:border-cyan-500/30">
-                      ${exam.type === 'midterm' ? 'نصفي (ميد)' : exam.type === 'final' ? 'نهائي' : 'شهري'}
+                      ${UI.getExamTypeLabel(exam.type)}
                     </span>
 
                     ${exam.isCompleted ? `
@@ -888,9 +888,9 @@ const Rep = {
           <div>
             <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">نوع الامتحان *</label>
             <select id="exm-type" class="w-full bg-gray-50 dark:bg-[#18182e] border border-gray-300 dark:border-white/10 rounded-xl px-4 py-2 text-xs text-gray-900 dark:text-white focus:outline-none cursor-pointer">
-              <option value="monthly" ${item && item.type === 'monthly' ? 'selected' : ''}>امتحان شهري</option>
-              <option value="midterm" ${item && item.type === 'midterm' ? 'selected' : ''}>امتحان نصفي (ميد)</option>
-              <option value="final" ${item && item.type === 'final' ? 'selected' : ''}>امتحان نهائي (فاينل)</option>
+              <option value="monthly" ${item && item.type === 'monthly' ? 'selected' : ''}>امتحان كوز</option>
+              <option value="midterm" ${item && item.type === 'midterm' ? 'selected' : ''}>امتحان ميد</option>
+              <option value="final" ${item && item.type === 'final' ? 'selected' : ''}>اختبار / تجريبي</option>
             </select>
           </div>
           <div>

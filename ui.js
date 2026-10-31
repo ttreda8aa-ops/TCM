@@ -45,6 +45,17 @@ const UI = {
 
   dayNames: ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'],
 
+  // Internal values stay unchanged for backward compatibility; only labels change.
+  examTypeLabels: {
+    monthly: 'امتحان كوز',
+    midterm: 'امتحان ميد',
+    final: 'اختبار / تجريبي'
+  },
+
+  getExamTypeLabel(type) {
+    return this.examTypeLabels[type] || 'امتحان';
+  },
+
   getAcademicDayIndex(jsDate = new Date()) {
     const jsDay = jsDate.getDay();
     return (jsDay + 1) % 7;
@@ -270,8 +281,9 @@ const UI = {
             isDestructive,
             isPrimary: !isDestructive,
             onClick: (close) => {
-              close();
+              // Resolve before closing: close() triggers onClose(), which resolves false.
               resolve(true);
+              close();
             }
           }
         ],

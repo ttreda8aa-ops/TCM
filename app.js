@@ -11,6 +11,7 @@
 
 const App = {
   container: null,
+  lastCloudErrorToast: 0,
 
   async init() {
     this.container = document.getElementById('app-root');
@@ -38,6 +39,14 @@ const App = {
     // Listen to internal data updates
     window.addEventListener('uni-data-changed', (e) => {
       this.handleInternalSync(e.detail);
+    });
+
+    // Cloud sync failures are surfaced once every few seconds (writes remain local-first)
+    window.addEventListener('cloud-sync-error', () => {
+      const now = Date.now();
+      if (now - (this.lastCloudErrorToast || 0) < 8000) return;
+      this.lastCloudErrorToast = now;
+      window.UI.toast('تم الحفظ محلياً فقط، تعذرت المزامنة مع السحابة. تحقق من الاتصال.', 'warning', 5000);
     });
 
     // Run initial route

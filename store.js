@@ -96,6 +96,30 @@ async function sha256(text) {
 // ==========================================
 // 1.5 Appwrite Cloud Sync Helper
 // ==========================================
+// Appwrite document IDs live in `$id` and the collections have no `id` attribute.
+// Keep a single local identifier (`id`) but strip it before every cloud write.
+function toCloudPayload(data) {
+  const payload = {};
+  if (!data || typeof data !== 'object') return payload;
+  Object.keys(data).forEach((key) => {
+    if (key === 'id' || key.startsWith('$')) return;
+    if (data[key] === undefined) return;
+    payload[key] = data[key];
+  });
+  return payload;
+}
+
+function normalizeCloudDocument(doc) {
+  if (!doc || typeof doc !== 'object') return doc;
+  const normalized = {};
+  Object.keys(doc).forEach((key) => {
+    if (key.startsWith('$')) return;
+    normalized[key] = doc[key];
+  });
+  normalized.id = doc.id || doc.$id;
+  return normalized;
+}
+
 const AppwriteSync = {
   isAvailable() {
     return typeof window !== 'undefined' && window.isAppwriteActive && window.isAppwriteActive();
@@ -110,7 +134,7 @@ const AppwriteSync = {
         colId,
         queries
       );
-      return res.documents || [];
+      return (res.documents || []).map(normalizeCloudDocument);
     } catch (e) {
       console.warn(`[Appwrite] listDocuments error on ${collectionName}:`, e.message);
       return null;
@@ -123,15 +147,16 @@ const AppwriteSync = {
       const colId = window.AppwriteConfig.collections[collectionName] || collectionName;
       const ID = window.Appwrite ? window.Appwrite.ID : { unique: () => 'doc_' + Date.now() };
       const actualId = docId || ID.unique();
-      return await window.appwriteDatabases.createDocument(
+      const created = await window.appwriteDatabases.createDocument(
         window.AppwriteConfig.databaseId,
         colId,
         actualId,
-        data
+        toCloudPayload(data)
       );
+      return normalizeCloudDocument(created);
     } catch (e) {
       console.warn(`[Appwrite] createDocument error on ${collectionName}:`, e.message);
-      return null;
+      throw e;
     }
   },
 
@@ -139,15 +164,16 @@ const AppwriteSync = {
     if (!this.isAvailable()) return null;
     try {
       const colId = window.AppwriteConfig.collections[collectionName] || collectionName;
-      return await window.appwriteDatabases.updateDocument(
+      const updated = await window.appwriteDatabases.updateDocument(
         window.AppwriteConfig.databaseId,
         colId,
         docId,
-        data
+        toCloudPayload(data)
       );
+      return normalizeCloudDocument(updated);
     } catch (e) {
       console.warn(`[Appwrite] updateDocument error on ${collectionName}:`, e.message);
-      return null;
+      throw e;
     }
   },
 
@@ -163,7 +189,7 @@ const AppwriteSync = {
       return true;
     } catch (e) {
       console.warn(`[Appwrite] deleteDocument error on ${collectionName}:`, e.message);
-      return false;
+      throw e;
     }
   },
 
@@ -387,6 +413,17 @@ const DEFAULT_EVENING_ASSIGNMENTS = [
   { id: 'asg_e_2', title: 'بحث مقارن حول خوادم السحابة', subject: 'هندسة البرمجيات', kind: 'report', description: 'دراسة حالة حول التكاليف والأمان.', dueDate: '2026-11-10T20:00', submission: 'البريد الأكاديمي', pages: '8 صفحات' }
 ];
 
+// Demo IDs must never be uploaded to the cloud automatically.
+const DEMO_CONTENT_IDS = new Set([
+  ...DEFAULT_REPS,
+  ...DEFAULT_MORNING_LECTURES,
+  ...DEFAULT_EVENING_LECTURES,
+  ...DEFAULT_MORNING_EXAMS,
+  ...DEFAULT_EVENING_EXAMS,
+  ...DEFAULT_MORNING_ASSIGNMENTS,
+  ...DEFAULT_EVENING_ASSIGNMENTS
+].map((item) => item.id).concat(['alert_morning']));
+
 const Store = {
   realm: localRealm,
   sha256,
@@ -407,7 +444,174 @@ const Store = {
     }
 
     // Initialize Appwrite Realtime Sync & Background Fetch
+    await this.bootstrapLocalContentToCloud();
     this.initAppwriteSync();
+  },
+
+  _emitCloudError(action, error, extra = {}) {
+    const message = error && error.message ? error.message : String(error);
+    console.warn(`[Appwrite] ${action} sync failed:`, message);
+    window.dispatchEvent(new CustomEvent('cloud-sync-error', {
+      detail: { action, message, ...extra }
+    }));
+  },
+
+  _isValidDocId(id) {
+    return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/.test(id);
+  },
+
+  _getLocalShiftContent(shift) {
+    const alertSchema = shift === 'morning' ? Schemas.MorningAlert : Schemas.EveningAlert;
+    return {
+      lectures: localRealm.objects(this._getSchemaName(shift, 'lectures')).all(),
+      exams: localRealm.objects(this._getSchemaName(shift, 'exams')).all(),
+      assignments: localRealm.objects(this._getSchemaName(shift, 'assignments')).all(),
+      alert: localRealm.objects(alertSchema).all()[0] || null
+    };
+  },
+
+  _getAllLocalContent() {
+    const collect = (schema, shift) => localRealm.objects(schema).all().map((item) => ({ ...item, shift }));
+    return {
+      lectures: [
+        ...collect(Schemas.MorningLecture, 'morning'),
+        ...collect(Schemas.EveningLecture, 'evening')
+      ],
+      exams: [
+        ...collect(Schemas.MorningExam, 'morning'),
+        ...collect(Schemas.EveningExam, 'evening')
+      ],
+      assignments: [
+        ...collect(Schemas.MorningAssignment, 'morning'),
+        ...collect(Schemas.EveningAssignment, 'evening')
+      ],
+      alerts: [
+        ...collect(Schemas.MorningAlert, 'morning'),
+        ...collect(Schemas.EveningAlert, 'evening')
+      ]
+    };
+  },
+
+  _hasCustomLocalContent() {
+    const local = this._getAllLocalContent();
+    return Object.values(local).some((rows) => rows.some((row) => row.id && !DEMO_CONTENT_IDS.has(row.id)));
+  },
+
+  // One-time upload of legacy local custom data (demo fixtures are skipped).
+  async bootstrapLocalContentToCloud() {
+    if (!AppwriteSync.isAvailable()) return 0;
+    const bootstrapKey = 'uni.cloud.bootstrap.v1';
+    if (localStorage.getItem(bootstrapKey)) return 0;
+    if (!this._hasCustomLocalContent()) {
+      localStorage.setItem(bootstrapKey, new Date().toISOString());
+      return 0;
+    }
+
+    const local = this._getAllLocalContent();
+    let uploaded = 0;
+    let completed = true;
+
+    for (const collectionName of ['lectures', 'exams', 'assignments', 'alerts']) {
+      const cloudDocs = await AppwriteSync.listDocuments(collectionName);
+      if (cloudDocs === null) {
+        completed = false;
+        continue;
+      }
+
+      for (const shift of ['morning', 'evening']) {
+        const cloudShiftDocs = cloudDocs.filter((doc) => doc.shift === shift);
+        if (cloudShiftDocs.length > 0) continue;
+
+        const rows = local[collectionName].filter(
+          (row) => row.shift === shift && row.id && !DEMO_CONTENT_IDS.has(row.id)
+        );
+
+        for (const row of rows) {
+          try {
+            await AppwriteSync.createDocument(
+              collectionName,
+              this._isValidDocId(row.id) ? row.id : undefined,
+              row
+            );
+            uploaded += 1;
+          } catch (err) {
+            if (err && err.code === 409) continue;
+            completed = false;
+            this._emitCloudError('bootstrap', err, { collection: collectionName, shift });
+          }
+        }
+      }
+    }
+
+    if (uploaded > 0) {
+      console.log(`[Appwrite] Bootstrap uploaded ${uploaded} local document(s) to the cloud.`);
+      window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'cloud-bootstrap' } }));
+    }
+
+    // Only mark the one-time bootstrap as done after a fully successful pass,
+    // so a temporary network failure can retry on the next load.
+    if (completed) {
+      localStorage.setItem(bootstrapKey, new Date().toISOString());
+    }
+    return uploaded;
+  },
+
+  // Manual full push (used by backup restore). `replace` mirrors local data exactly.
+  async pushLocalContentToCloud({ replace = false, silent = false } = {}) {
+    if (!AppwriteSync.isAvailable()) {
+      return { ok: false, uploaded: 0, deleted: 0, errors: ['unavailable'] };
+    }
+
+    const local = this._getAllLocalContent();
+    const report = { ok: true, uploaded: 0, deleted: 0, errors: [] };
+
+    for (const collectionName of ['lectures', 'exams', 'assignments', 'alerts']) {
+      let cloudDocs = await AppwriteSync.listDocuments(collectionName);
+      if (cloudDocs === null) {
+        report.ok = false;
+        report.errors.push(`تعذر قراءة ${collectionName} من السحابة`);
+        continue;
+      }
+
+      if (replace) {
+        for (const doc of cloudDocs) {
+          try {
+            await AppwriteSync.deleteDocument(collectionName, doc.id);
+            report.deleted += 1;
+          } catch (err) {
+            if (err && err.code === 404) continue;
+            report.ok = false;
+            report.errors.push(`${collectionName}: ${err.message}`);
+            this._emitCloudError('push-replace', err, { collection: collectionName });
+          }
+        }
+        cloudDocs = [];
+      }
+
+      if (cloudDocs.length > 0) continue;
+
+      for (const row of local[collectionName]) {
+        if (!replace && (!row.id || DEMO_CONTENT_IDS.has(row.id))) continue;
+        try {
+          await AppwriteSync.createDocument(
+            collectionName,
+            this._isValidDocId(row.id) ? row.id : undefined,
+            row
+          );
+          report.uploaded += 1;
+        } catch (err) {
+          if (err && err.code === 409) continue;
+          report.ok = false;
+          report.errors.push(`${collectionName}: ${err.message}`);
+          this._emitCloudError('push', err, { collection: collectionName });
+        }
+      }
+    }
+
+    if (!silent && (report.uploaded > 0 || report.deleted > 0)) {
+      window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'cloud-push' } }));
+    }
+    return report;
   },
 
   async initAppwriteSync() {
@@ -451,31 +655,33 @@ const Store = {
   async syncFromAppwrite() {
     if (!AppwriteSync.isAvailable()) return;
     try {
-      // 1. Fetch lectures from Appwrite
-      const cloudLectures = await AppwriteSync.listDocuments('lectures');
-      if (cloudLectures && cloudLectures.length > 0) {
-        const morning = cloudLectures.filter(l => l.shift === 'morning');
-        const evening = cloudLectures.filter(l => l.shift === 'evening');
-        if (morning.length) localRealm.write(r => r.setAll(Schemas.MorningLecture, morning));
-        if (evening.length) localRealm.write(r => r.setAll(Schemas.EveningLecture, evening));
-      }
+      const [cloudLectures, cloudExams, cloudAssignments, cloudAlerts] = await Promise.all([
+        AppwriteSync.listDocuments('lectures'),
+        AppwriteSync.listDocuments('exams'),
+        AppwriteSync.listDocuments('assignments'),
+        AppwriteSync.listDocuments('alerts')
+      ]);
 
-      // 2. Fetch exams
-      const cloudExams = await AppwriteSync.listDocuments('exams');
-      if (cloudExams && cloudExams.length > 0) {
-        const morning = cloudExams.filter(e => e.shift === 'morning');
-        const evening = cloudExams.filter(e => e.shift === 'evening');
-        if (morning.length) localRealm.write(r => r.setAll(Schemas.MorningExam, morning));
-        if (evening.length) localRealm.write(r => r.setAll(Schemas.EveningExam, evening));
-      }
+      const applyPerShift = (docs, collectionName) => {
+        if (!docs) return;
+        ['morning', 'evening'].forEach((shift) => {
+          const rows = docs.filter((doc) => doc.shift === shift);
+          const schema = this._getSchemaName(shift, collectionName);
+          localRealm.write((r) => r.setAll(schema, rows));
+        });
+      };
 
-      // 3. Fetch alerts
-      const cloudAlerts = await AppwriteSync.listDocuments('alerts');
+      applyPerShift(cloudLectures, 'lectures');
+      applyPerShift(cloudExams, 'exams');
+      applyPerShift(cloudAssignments, 'assignments');
+
       if (cloudAlerts && cloudAlerts.length > 0) {
-        const morningAlert = cloudAlerts.find(a => a.shift === 'morning');
-        const eveningAlert = cloudAlerts.find(a => a.shift === 'evening');
-        if (morningAlert) localRealm.write(r => r.setAll(Schemas.MorningAlert, [morningAlert]));
-        if (eveningAlert) localRealm.write(r => r.setAll(Schemas.EveningAlert, [eveningAlert]));
+        ['morning', 'evening'].forEach((shift) => {
+          const item = cloudAlerts.find((alert) => alert.shift === shift);
+          if (!item) return;
+          const schema = shift === 'morning' ? Schemas.MorningAlert : Schemas.EveningAlert;
+          localRealm.write((r) => r.setAll(schema, [item]));
+        });
       }
 
       window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'appwrite-synced' } }));
@@ -509,32 +715,37 @@ const Store = {
     localRealm.write(r => {
       r.setAll(Schemas.Settings, [updated]);
     });
+
+    await this._pushSettingsData(updated);
     window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'settings' } }));
-
-    // Sync to Appwrite Cloud
-    if (AppwriteSync.isAvailable()) {
-      try {
-        const cloudDocs = await AppwriteSync.listDocuments('settings');
-        const payload = { data: JSON.stringify(updated) };
-        if (cloudDocs && cloudDocs.length > 0) {
-          const docId = cloudDocs[0].$id;
-          await AppwriteSync.updateDocument('settings', docId, payload);
-        } else {
-          await AppwriteSync.createDocument('settings', 'app_settings', payload);
-        }
-      } catch (err) {
-        console.warn('Appwrite settings sync error:', err.message);
-      }
-    }
-
     return updated;
+  },
+
+  async _pushSettingsData(settings) {
+    if (!AppwriteSync.isAvailable()) return false;
+    const payload = { data: JSON.stringify(settings) };
+    try {
+      try {
+        await AppwriteSync.updateDocument('settings', 'app_settings', payload);
+      } catch (err) {
+        if (err && err.code === 404) {
+          await AppwriteSync.createDocument('settings', 'app_settings', payload);
+        } else {
+          throw err;
+        }
+      }
+      return true;
+    } catch (err) {
+      this._emitCloudError('saveSettings', err);
+      return false;
+    }
   },
 
   async getReps() {
     if (AppwriteSync.isAvailable()) {
       try {
         const cloudDocs = await AppwriteSync.listDocuments('representatives');
-        if (cloudDocs !== null) {
+        if (cloudDocs !== null && cloudDocs.length > 0) {
           const reps = cloudDocs.map(d => ({
             id: d.$id || d.id,
             name: d.name,
@@ -580,7 +791,6 @@ const Store = {
     localRealm.write(r => {
       created = r.create(Schemas.Representative, newRep);
     });
-    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'reps' } }));
 
     // Sync to Appwrite Cloud
     if (AppwriteSync.isAvailable()) {
@@ -592,11 +802,18 @@ const Store = {
         createdAt: newRep.createdAt,
         lastLoginAt: ''
       };
-      AppwriteSync.createDocument('representatives', created.id, cloudPayload).catch(e => {
-        console.warn('Appwrite rep create sync error:', e.message);
-      });
+      try {
+        await AppwriteSync.createDocument(
+          'representatives',
+          this._isValidDocId(created.id) ? created.id : undefined,
+          cloudPayload
+        );
+      } catch (err) {
+        if (!err || err.code !== 409) this._emitCloudError('addRep', err);
+      }
     }
 
+    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'reps' } }));
     return created;
   },
 
@@ -605,7 +822,6 @@ const Store = {
     localRealm.write(r => {
       updated = r.update(Schemas.Representative, id, patch);
     });
-    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'reps' } }));
 
     // Sync to Appwrite Cloud
     if (AppwriteSync.isAvailable()) {
@@ -613,11 +829,26 @@ const Store = {
       if (cloudPatch.shifts && Array.isArray(cloudPatch.shifts)) {
         cloudPatch.shifts = JSON.stringify(cloudPatch.shifts);
       }
-      AppwriteSync.updateDocument('representatives', id, cloudPatch).catch(e => {
-        console.warn('Appwrite rep update sync error:', e.message);
-      });
+      try {
+        await AppwriteSync.updateDocument('representatives', id, cloudPatch);
+      } catch (err) {
+        if (err && err.code === 404 && this._isValidDocId(id)) {
+          try {
+            await AppwriteSync.createDocument('representatives', id, {
+              ...updated,
+              shifts: JSON.stringify(updated.shifts || ['morning']),
+              lastLoginAt: updated.lastLoginAt || ''
+            });
+          } catch (createErr) {
+            this._emitCloudError('updateRep', createErr);
+          }
+        } else {
+          this._emitCloudError('updateRep', err);
+        }
+      }
     }
 
+    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'reps' } }));
     return updated;
   },
 
@@ -625,15 +856,17 @@ const Store = {
     localRealm.write(r => {
       r.delete(Schemas.Representative, id);
     });
-    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'reps' } }));
 
     // Sync to Appwrite Cloud
     if (AppwriteSync.isAvailable()) {
-      AppwriteSync.deleteDocument('representatives', id).catch(e => {
-        console.warn('Appwrite rep delete sync error:', e.message);
-      });
+      try {
+        await AppwriteSync.deleteDocument('representatives', id);
+      } catch (err) {
+        if (!err || err.code !== 404) this._emitCloudError('deleteRep', err);
+      }
     }
 
+    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'reps' } }));
     return true;
   },
 
@@ -688,19 +921,37 @@ const Store = {
     localRealm.write(r => {
       r.setAll(schema, [payload]);
     });
-    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection: 'alert' } }));
 
-    // Sync to Appwrite Cloud in background
+    // Sync to Appwrite Cloud
     if (AppwriteSync.isAvailable()) {
-      AppwriteSync.createDocument('alerts', payload.id, payload).catch(() => {
-        AppwriteSync.updateDocument('alerts', payload.id, payload);
-      });
+      try {
+        const cloudDocs = await AppwriteSync.listDocuments('alerts');
+        const existing = (cloudDocs || []).find((doc) => doc.shift === shift);
+        const cloudData = {
+          shift,
+          active: payload.active,
+          text: payload.text,
+          type: payload.type,
+          updatedAt: payload.updatedAt
+        };
+        if (existing) {
+          await AppwriteSync.updateDocument('alerts', existing.id, cloudData);
+        } else {
+          await AppwriteSync.createDocument('alerts', this._isValidDocId(payload.id) ? payload.id : undefined, cloudData);
+        }
+      } catch (err) {
+        this._emitCloudError('saveUrgentAlert', err, { shift });
+      }
     }
 
+    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection: 'alert' } }));
     return payload;
   },
 
   async getShiftData(shift = 'morning') {
+    const local = this._getLocalShiftContent(shift);
+    const isCustom = (row) => !!row && !!row.id && !DEMO_CONTENT_IDS.has(row.id);
+
     // 1. If Appwrite Cloud is available, fetch live documents directly
     if (AppwriteSync.isAvailable()) {
       try {
@@ -712,18 +963,13 @@ const Store = {
         ]);
 
         if (cloudLec !== null && cloudExm !== null && cloudAsg !== null) {
-          const lectures = cloudLec.filter(l => l.shift === shift);
-          const exams = cloudExm.filter(e => e.shift === shift);
-          const assignments = cloudAsg.filter(a => a.shift === shift);
-          const alertItem = (cloudAlerts || []).find(a => a.shift === shift);
-          const urgentAlert = alertItem ? {
-            active: !!alertItem.active,
-            text: alertItem.text || '',
-            type: alertItem.type || 'urgent',
-            updatedAt: alertItem.updatedAt || null
-          } : { active: false, text: '', type: 'urgent', updatedAt: null };
+          const lectures = cloudLec.filter((item) => item.shift === shift);
+          const exams = cloudExm.filter((item) => item.shift === shift);
+          const assignments = cloudAsg.filter((item) => item.shift === shift);
 
-          // Update local cache seamlessly
+          // The cloud is authoritative once reachable: bootstrap has already uploaded
+          // any legacy local data before the first render, so mirroring empty results
+          // is safe and prevents deleted items from resurrecting from the local cache.
           const lecSchema = this._getSchemaName(shift, 'lectures');
           const exmSchema = this._getSchemaName(shift, 'exams');
           const asgSchema = this._getSchemaName(shift, 'assignments');
@@ -732,8 +978,28 @@ const Store = {
             r.setAll(lecSchema, lectures);
             r.setAll(exmSchema, exams);
             r.setAll(asgSchema, assignments);
-            r.setAll(alertSchema, alertItem ? [alertItem] : []);
           });
+
+          const alertItem = (cloudAlerts || []).find((item) => item.shift === shift);
+          let urgentAlert;
+          if (alertItem) {
+            urgentAlert = {
+              active: !!alertItem.active,
+              text: alertItem.text || '',
+              type: alertItem.type || 'urgent',
+              updatedAt: alertItem.updatedAt || null
+            };
+            localRealm.write(r => r.setAll(alertSchema, [alertItem]));
+          } else if (isCustom(local.alert)) {
+            urgentAlert = {
+              active: !!local.alert.active,
+              text: local.alert.text || '',
+              type: local.alert.type || 'urgent',
+              updatedAt: local.alert.updatedAt || null
+            };
+          } else {
+            urgentAlert = { active: false, text: '', type: 'urgent', updatedAt: null };
+          }
 
           return {
             lectures,
@@ -749,15 +1015,12 @@ const Store = {
     }
 
     // 2. Offline / Local Fallback
-    const lecSchema = this._getSchemaName(shift, 'lectures');
-    const exmSchema = this._getSchemaName(shift, 'exams');
-    const asgSchema = this._getSchemaName(shift, 'assignments');
     const alert = await this.getUrgentAlert(shift);
 
     return {
-      lectures: localRealm.objects(lecSchema).all(),
-      exams: localRealm.objects(exmSchema).all(),
-      assignments: localRealm.objects(asgSchema).all(),
+      lectures: local.lectures,
+      exams: local.exams,
+      assignments: local.assignments,
       urgentAlert: alert,
       updatedAt: new Date().toISOString()
     };
@@ -777,16 +1040,30 @@ const Store = {
     localRealm.write(r => {
       created = r.create(schema, newItem);
     });
-    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection } }));
 
-    // Sync to Appwrite Cloud in background
+    // Sync to Appwrite Cloud (awaited so the UI re-render sees the cloud state)
     if (AppwriteSync.isAvailable()) {
-      const appwriteCol = collection; // 'lectures', 'exams', 'assignments'
-      AppwriteSync.createDocument(appwriteCol, created.id, created).catch(err => {
-        console.warn('[Appwrite sync addItem]:', err.message);
-      });
+      try {
+        await AppwriteSync.createDocument(
+          collection,
+          this._isValidDocId(created.id) ? created.id : undefined,
+          created
+        );
+      } catch (err) {
+        if (err && err.code === 409) {
+          try {
+            await AppwriteSync.updateDocument(collection, created.id, created);
+          } catch (updateErr) {
+            this._emitCloudError('addItem', updateErr, { shift, collection });
+          }
+        } else {
+          this._emitCloudError('addItem', err, { shift, collection });
+        }
+      }
     }
 
+    // Redraw only after the cloud write settles, to avoid a stale fetch overwriting local data.
+    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection } }));
     return created;
   },
 
@@ -804,16 +1081,27 @@ const Store = {
     localRealm.write(r => {
       updated = r.update(schema, id, sanitizedPatch);
     });
-    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection } }));
 
-    // Sync to Appwrite Cloud in background
+    // Sync to Appwrite Cloud
     if (AppwriteSync.isAvailable()) {
-      const appwriteCol = collection;
-      AppwriteSync.updateDocument(appwriteCol, id, sanitizedPatch).catch(err => {
-        console.warn('[Appwrite sync updateItem]:', err.message);
-      });
+      try {
+        await AppwriteSync.updateDocument(collection, id, sanitizedPatch);
+      } catch (err) {
+        // Legacy local-only items may not exist in the cloud yet.
+        if (err && err.code === 404 && this._isValidDocId(id) && updated) {
+          try {
+            await AppwriteSync.createDocument(collection, id, updated);
+          } catch (createErr) {
+            this._emitCloudError('updateItem', createErr, { shift, collection });
+          }
+        } else {
+          this._emitCloudError('updateItem', err, { shift, collection });
+        }
+      }
     }
 
+    // Redraw only after the cloud write settles.
+    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection } }));
     return updated;
   },
 
@@ -822,16 +1110,18 @@ const Store = {
     localRealm.write(r => {
       r.delete(schema, id);
     });
-    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection } }));
 
-    // Sync to Appwrite Cloud in background
+    // Sync to Appwrite Cloud
     if (AppwriteSync.isAvailable()) {
-      const appwriteCol = collection;
-      AppwriteSync.deleteDocument(appwriteCol, id).catch(err => {
-        console.warn('[Appwrite sync deleteItem]:', err.message);
-      });
+      try {
+        await AppwriteSync.deleteDocument(collection, id);
+      } catch (err) {
+        if (!err || err.code !== 404) this._emitCloudError('deleteItem', err, { shift, collection });
+      }
     }
 
+    // Redraw only after the cloud delete settles; otherwise a stale fetch can restore the item.
+    window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { shift, collection } }));
     return true;
   },
 
@@ -859,7 +1149,7 @@ const Store = {
     return newStatus;
   },
 
-  async resetFactory(loadDemo = true) {
+  async resetFactory(loadDemo = true, syncCloud = false) {
     localRealm.write(r => {
       r.setAll(Schemas.Settings, [DEFAULT_SETTINGS]);
       r.setAll(Schemas.Representative, loadDemo ? DEFAULT_REPS : []);
@@ -877,6 +1167,26 @@ const Store = {
     localStorage.removeItem('uni.session.rep');
     sessionStorage.removeItem('uni.session.admin');
     sessionStorage.removeItem('uni.session.rep.temp');
+
+    // Cloud content must be cleared too, otherwise the next fetch restores removed data.
+    if (syncCloud && AppwriteSync.isAvailable()) {
+      for (const collectionName of ['lectures', 'exams', 'assignments', 'alerts']) {
+        const cloudDocs = await AppwriteSync.listDocuments(collectionName);
+        if (!cloudDocs) continue;
+        for (const doc of cloudDocs) {
+          try {
+            await AppwriteSync.deleteDocument(collectionName, doc.id);
+          } catch (err) {
+            if (!err || err.code !== 404) {
+              this._emitCloudError('resetFactory', err, { collection: collectionName });
+            }
+          }
+        }
+      }
+      await this._pushSettingsData(DEFAULT_SETTINGS);
+    }
+
+    // Redraw after the cloud clearing settles.
     window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'all' } }));
     return true;
   },
@@ -896,7 +1206,50 @@ const Store = {
     return JSON.stringify(payload, null, 2);
   },
 
-  async importAll(jsonString) {
+  async _replaceCloudReps(reps) {
+    if (!AppwriteSync.isAvailable()) return false;
+    const cloudDocs = await AppwriteSync.listDocuments('representatives');
+    if (cloudDocs === null) return false;
+
+    const incoming = Array.isArray(reps) ? reps : [];
+    const incomingIds = new Set(incoming.map((rep) => rep.id).filter((id) => this._isValidDocId(id)));
+
+    for (const doc of cloudDocs) {
+      if (incomingIds.has(doc.id)) continue;
+      try {
+        await AppwriteSync.deleteDocument('representatives', doc.id);
+      } catch (err) {
+        if (!err || err.code !== 404) this._emitCloudError('importReps', err, { id: doc.id });
+      }
+    }
+
+    for (const rep of incoming) {
+      const payload = {
+        name: rep.name || '',
+        code: rep.code || '',
+        shifts: JSON.stringify(Array.isArray(rep.shifts) ? rep.shifts : ['morning']),
+        active: rep.active !== false,
+        createdAt: rep.createdAt || new Date().toISOString(),
+        lastLoginAt: rep.lastLoginAt || ''
+      };
+      try {
+        if (cloudDocs.some((doc) => doc.id === rep.id)) {
+          await AppwriteSync.updateDocument('representatives', rep.id, payload);
+        } else {
+          await AppwriteSync.createDocument(
+            'representatives',
+            this._isValidDocId(rep.id) ? rep.id : undefined,
+            payload
+          );
+        }
+      } catch (err) {
+        if (!err || err.code !== 409) this._emitCloudError('importReps', err, { id: rep.id });
+      }
+    }
+    return true;
+  },
+
+  async importAll(jsonString, syncCloud = false) {
     const data = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
     if (!data || !data.morning || !data.evening) {
       throw new Error('صيغة ملف النسخة الاحتياطية غير صالحة');
@@ -913,8 +1266,21 @@ const Store = {
       if (data.evening.assignments) r.setAll(Schemas.EveningAssignment, data.evening.assignments);
     });
 
+    if (syncCloud && AppwriteSync.isAvailable()) {
+      const report = await this.pushLocalContentToCloud({ replace: true, silent: true });
+      if (data.settings) {
+        await this._pushSettingsData({ ...DEFAULT_SETTINGS, ...data.settings });
+      }
+      if (data.reps) {
+        await this._replaceCloudReps(data.reps);
+      }
+      // Redraw once everything is mirrored to the cloud.
+      window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'all' } }));
+      return report;
+    }
+
     window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { key: 'all' } }));
-    return true;
+    return { ok: true, uploaded: 0, deleted: 0, errors: [] };
   }
 };
 

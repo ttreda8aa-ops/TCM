@@ -3,7 +3,7 @@
  * Direct cloud connection to:
  * - Endpoint: https://fra.cloud.appwrite.io/v1
  * - Project ID: 6ae4ef9d0002a2c51246
- * - Database ID: tablesdb
+ * - Database ID: 6ae4f0b30034ed869dd8
  */
 
 const AppwriteConfig = {

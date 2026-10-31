@@ -40,6 +40,7 @@ const Student = {
 
     const assignmentsOnly = (data.assignments || []).filter(a => a.kind === 'assignment');
     const reportsOnly = (data.assignments || []).filter(a => a.kind === 'report');
+    const completedExams = (data.exams || []).filter(e => e.isCompleted === true);
 
     container.innerHTML = `
       <div class="min-h-screen pb-16 relative overflow-hidden">
@@ -127,6 +128,14 @@ const Student = {
 
         <!-- Main Body -->
         <main class="max-w-6xl mx-auto px-4 sm:px-6 relative z-10">
+          ${this.renderSummaryCards({
+            lectures: (data.lectures || []).length,
+            exams: (data.exams || []).length,
+            reports: reportsOnly.length,
+            assignments: assignmentsOnly.length,
+            completedExams: completedExams.length
+          }, settings)}
+
           <!-- 4 Distinct Separate Tabs (Assignments and Reports separated) -->
           <div class="flex items-center gap-2 p-1.5 bg-gray-100 dark:bg-[#121224] border border-gray-200 dark:border-white/10 rounded-2xl mb-6 overflow-x-auto">
             <!-- Tab 1: Lectures -->
@@ -198,6 +207,59 @@ const Student = {
     this.bindEvents(container);
     this.startLiveClock();
     this.startExamCountdowns();
+  },
+
+  // 0. Summary Cards (5 compact rectangular cards above the tabs)
+  renderSummaryCards(stats, settings) {
+    const fmt = (value) => UI.formatNumber(value, settings.numberFormat);
+    const cards = [
+      {
+        label: 'المحاضرات الأسبوعية',
+        value: stats.lectures,
+        icon: UI.icons.calendar,
+        iconClass: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20'
+      },
+      {
+        label: 'الامتحانات',
+        value: stats.exams,
+        icon: UI.icons.clock,
+        iconClass: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+      },
+      {
+        label: 'التقارير',
+        value: stats.reports,
+        icon: UI.icons.fileText,
+        iconClass: 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20'
+      },
+      {
+        label: 'الواجبات',
+        value: stats.assignments,
+        icon: UI.icons.checkCircle,
+        iconClass: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+      },
+      {
+        label: 'الامتحانات المنجزة',
+        value: stats.completedExams,
+        icon: UI.icons.checkDone,
+        iconClass: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+      }
+    ];
+
+    return `
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-5">
+        ${cards.map((card, index) => `
+          <div class="glass-panel rounded-2xl border border-gray-200 dark:border-white/10 px-3 py-3 sm:px-4 sm:py-4 flex items-center gap-3 shadow-sm hover:shadow-md transition ${index === cards.length - 1 ? 'col-span-2 sm:col-span-1' : ''}">
+            <div class="w-9 h-9 sm:w-10 sm:h-10 flex-shrink-0 rounded-xl border flex items-center justify-center ${card.iconClass}">
+              ${card.icon}
+            </div>
+            <div class="min-w-0">
+              <div class="font-mono-numeric text-lg sm:text-xl font-black leading-none text-gray-900 dark:text-white">${fmt(card.value)}</div>
+              <div class="text-[10px] sm:text-[11px] font-bold text-gray-500 dark:text-gray-400 mt-1 leading-tight">${card.label}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
   },
 
   // 1. Lectures Section (Sunday to Thursday)
@@ -368,14 +430,7 @@ const Student = {
       }
     });
 
-    const getExamTypeLabel = (type) => {
-      switch (type) {
-        case 'monthly': return 'امتحان شهري';
-        case 'midterm': return 'امتحان نصفي (ميد)';
-        case 'final': return 'امتحان نهائي (فاينل)';
-        default: return 'امتحان';
-      }
-    };
+    const getExamTypeLabel = (type) => UI.getExamTypeLabel(type);
 
     return `
       <div>

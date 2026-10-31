@@ -534,11 +534,15 @@ const Admin = {
         const reader = new FileReader();
         reader.onload = async (evt) => {
           try {
-            await window.Store.importAll(evt.target.result);
-            UI.toast('تمت استعادة البيانات بنجاح في Realm DB ✓', 'success');
+            const result = await window.Store.importAll(evt.target.result, true);
+            if (result && result.ok === false) {
+              UI.toast('تم الاستيراد محلياً، لكن تعذر رفع بعض البيانات إلى السحابة', 'warning', 5000);
+            } else {
+              UI.toast('تمت استعادة البيانات ومزامنتها مع السحابة ✓', 'success');
+            }
             this.render(container);
-          } catch {
-            UI.toast('صيغة الملف غير صحيحة', 'error');
+          } catch (err) {
+            UI.toast(err && err.message ? err.message : 'صيغة الملف غير صحيحة', 'error');
           }
         };
         reader.readAsText(file);
@@ -550,13 +554,13 @@ const Admin = {
       resetBtn.onclick = async () => {
         const ok = await UI.confirm({
           title: 'إعادة ضبط المصنع',
-          message: 'هل تريد إعادة ضبط بيانات Realm DB إلى الحالة الافتراضية؟',
+          message: 'هل تريد إعادة ضبط البيانات المحلية والسحابية إلى الحالة الافتراضية؟ لا يمكن التراجع عن هذا الإجراء.',
           isDestructive: true,
           confirmText: 'نعم، أعد الضبط'
         });
         if (ok) {
-          await window.Store.resetFactory(true);
-          UI.toast('تمت إعادة الضبط بنجاح', 'info');
+          await window.Store.resetFactory(true, true);
+          UI.toast('تمت إعادة الضبط محلياً وعلى السحابة', 'info');
           this.render(container);
         }
       };
