@@ -5,11 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>المنصة الجامعية الموحدة</title>
   <meta name="description" content="منصة تعليمية جامعية متكاملة لإدارة الجداول الدراسية والامتحانات والتكاليف الأكاديمية" />
-  <meta name="theme-color" content="#ffffff" />
+  <meta name="theme-color" content="#0284c7" />
+
+  <!-- PWA: installable app + offline support -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="المنصة الجامعية" />
+  <meta name="mobile-web-app-capable" content="yes" />
 
   <!-- Google Fonts: Cairo, Tajawal, JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.onesignal.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet" />
 
   <!-- Tailwind CSS CDN with darkMode class -->
@@ -38,24 +49,61 @@
   <!-- Asset layout detection: folders (css/, js/) or flat files (GitHub uploads without folders) -->
   <script>
     (function () {
-      function exists(url) {
+      function probe(url) {
         try {
           var xhr = new XMLHttpRequest();
           xhr.open('HEAD', url, false);
           xhr.send(null);
-          return xhr.status === 200 || xhr.status === 304;
+          return xhr.status;
         } catch (e) {
-          return false;
+          return 0;
         }
       }
+
       var isFile = window.location.protocol === 'file:';
-      var jsFolder = isFile || exists('js/app.js');
-      var cssFolder = isFile || exists('css/custom.css');
+      var saved = null;
+      try {
+        saved = JSON.parse(localStorage.getItem('uni.assetLayout') || 'null');
+      } catch (e) {
+        saved = null;
+      }
+
+      var jsFolder;
+      var cssFolder;
+
+      if (isFile) {
+        jsFolder = true;
+        cssFolder = true;
+      } else if (saved && navigator.onLine === false) {
+        // Already offline: skip the probe and reuse the last known layout.
+        jsFolder = !!saved.js;
+        cssFolder = !!saved.css;
+      } else {
+        var jsStatus = probe('js/app.js');
+        var cssStatus = probe('css/custom.css');
+        var netDown = function (status) { return status === 0 || status >= 500; };
+        var offline = netDown(jsStatus) && netDown(cssStatus);
+
+        if (offline && saved) {
+          // No network: reuse the layout detected on the last successful visit.
+          jsFolder = !!saved.js;
+          cssFolder = !!saved.css;
+        } else {
+          jsFolder = jsStatus === 200 || jsStatus === 304;
+          cssFolder = cssStatus === 200 || cssStatus === 304;
+          try {
+            localStorage.setItem('uni.assetLayout', JSON.stringify({ js: jsFolder, css: cssFolder }));
+          } catch (e) {}
+        }
+      }
+
       window.__assetPaths = {
         js: jsFolder ? 'js/' : '',
         css: cssFolder ? 'css/' : ''
       };
-      document.write('<link rel="stylesheet" href="' + window.__assetPaths.css + 'custom.css" />');
+      // Bump this value whenever the local CSS/JS files change (cache busting).
+      window.__assetVersion = '?v=20261105-3';
+      document.write('<link rel="stylesheet" href="' + window.__assetPaths.css + 'custom.css' + window.__assetVersion + '" />');
     })();
   </script>
 </head>
@@ -75,6 +123,8 @@
       var scripts = [
         'appwrite-client.js',
         'notifications.js',
+        'push.js',
+        'pwa.js',
         'store.js',
         'auth.js',
         'ui.js',
@@ -85,7 +135,7 @@
         'app.js'
       ];
       for (var i = 0; i < scripts.length; i++) {
-        document.write('<script src="' + base + scripts[i] + '"><\/script>');
+        document.write('<script src="' + base + scripts[i] + (window.__assetVersion || '') + '"><\/script>');
       }
     })();
   </script>

@@ -806,24 +806,39 @@ const Student = {
     const notifBtn = container.querySelector('#btn-toggle-notifications');
     if (notifBtn) {
       const updateNotifUi = () => {
+        if (!notifBtn.isConnected) return;
         const perm = window.NotificationsEngine ? window.NotificationsEngine.getPermission() : 'unsupported';
         const txt = notifBtn.querySelector('.notif-status-text');
         if (perm === 'granted') {
           if (txt) txt.textContent = 'الإشعارات مفعلة ✓';
           notifBtn.classList.add('text-emerald-600', 'dark:text-emerald-400');
+          notifBtn.classList.remove('text-rose-500');
         } else if (perm === 'denied') {
           if (txt) txt.textContent = 'الإشعارات محظورة';
           notifBtn.classList.add('text-rose-500');
+          notifBtn.classList.remove('text-emerald-600', 'dark:text-emerald-400');
         } else {
           if (txt) txt.textContent = 'تفعيل الإشعارات';
-          notifBtn.classList.remove('text-emerald-600', 'text-rose-500');
+          notifBtn.classList.remove('text-emerald-600', 'dark:text-emerald-400', 'text-rose-500');
         }
       };
       updateNotifUi();
 
+      // Keep the bell label in sync when OneSignal or the browser changes
+      // permission (including the return from the system settings page).
+      this.notifUiSync = updateNotifUi;
+      window.addEventListener('push-ready', updateNotifUi);
+      window.addEventListener('push-permission-changed', updateNotifUi);
+      window.addEventListener('notification-permission-changed', updateNotifUi);
+
       notifBtn.onclick = async () => {
-        if (window.NotificationsEngine) {
-          const ok = await window.NotificationsEngine.requestPermission();
+        const engine = window.PushEngine || window.NotificationsEngine;
+        if (!engine || typeof engine.requestPermission !== 'function') return;
+        notifBtn.disabled = true;
+        try {
+          await engine.requestPermission();
+        } finally {
+          notifBtn.disabled = false;
           updateNotifUi();
         }
       };
@@ -901,6 +916,12 @@ const Student = {
   },
 
   cleanup() {
+    if (this.notifUiSync) {
+      window.removeEventListener('push-ready', this.notifUiSync);
+      window.removeEventListener('push-permission-changed', this.notifUiSync);
+      window.removeEventListener('notification-permission-changed', this.notifUiSync);
+      this.notifUiSync = null;
+    }
     if (this.countdownInterval) {
       clearInterval(this.countdownInterval);
       this.countdownInterval = null;

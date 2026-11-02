@@ -626,22 +626,7 @@ const Store = {
           window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { collection: col, source: 'appwrite' } }));
 
           // Trigger System Push Notification for Students
-          if (window.NotificationsEngine && response && response.payload) {
-            const p = response.payload;
-            if (col === 'alerts' && p.active && p.text) {
-              window.NotificationsEngine.sendNotification({
-                title: 'تنبيه عاجل من ممثل الدفعة ⚠️',
-                body: p.text,
-                tag: 'urgent_alert_' + Date.now()
-              });
-            } else if (col === 'exams' && p.subject) {
-              window.NotificationsEngine.sendNotification({
-                title: 'امتحان جديد تم إدراجه 📅',
-                body: `مادة: ${p.subject} | التاريخ: ${p.date || ''}`,
-                tag: 'exam_alert_' + Date.now()
-              });
-            }
-          }
+          this.handleRealtimeNotification(col, response);
         });
       });
 
@@ -650,6 +635,125 @@ const Store = {
     } catch (e) {
       console.warn('Realtime init notice:', e.message);
     }
+  },
+
+  /**
+   * Local Realtime fallback for every notification type. The Appwrite Function
+   * remains the primary path (works in the background); this only covers open
+   * tabs when OneSignal is unavailable or the device is not subscribed yet.
+   *
+   * Tags match the server function exactly so the two paths never show twice.
+   */
+  handleRealtimeNotification(collection, response) {
+    if (
+      !window.NotificationsEngine ||
+      typeof window.NotificationsEngine.sendNotification !== 'function' ||
+      !response ||
+      !response.payload
+    ) {
+      return;
+    }
+
+    // Reps and admins are the ones creating these documents. Do not show them
+    // their own student-facing notification while they work in the dashboard.
+    const hash = (typeof window !== 'undefined' && window.location.hash) || '';
+    if (hash.startsWith('#/rep') || hash === '#/admin') return;
+
+    const p = response.payload;
+    const events = Array.isArray(response.events) ? response.events : [];
+    const isCreate =
+      events.length === 0 || events.some((eventName) => eventName.endsWith('.create'));
+    const isUpdate = events.some((eventName) => eventName.endsWith('.update'));
+    const shiftLabel = p.shift === 'evening' ? 'مسائي' : 'صباحي';
+    const dayName =
+      (window.UI && window.UI.dayNames && window.UI.dayNames[Number(p.day)]) || '';
+    const notify = (title, body, tag) => {
+      if (!tag || this._pushAlreadyHandled(tag)) return;
+      window.NotificationsEngine.sendNotification({ title, body, tag });
+    };
+
+    if (collection === 'alerts' && p.active && p.text && (isCreate || isUpdate)) {
+      // Notify once per alert version, not on every realtime echo.
+      const alertKey = `${p.shift || 'all'}:${p.updatedAt || p.text}`;
+      if (this._lastAlertNotificationKey === alertKey) return;
+      this._lastAlertNotificationKey = alertKey;
+      const alertTag = 'urgent_alert_' + (p.$id || p.shift || 'all');
+      notify(`تنبيه عاجل (${shiftLabel}) ⚠️`, p.text, alertTag);
+      return;
+    }
+
+    if (collection === 'exams' && p.subject && isCreate && p.isCompleted !== true) {
+      const examType =
+        window.UI && window.UI.getExamTypeLabel
+          ? window.UI.getExamTypeLabel(p.type)
+          : 'امتحان';
+      const body = [
+        `مادة: ${p.subject}`,
+        p.date ? `التاريخ: ${p.date}` : '',
+        p.time ? `الوقت: ${p.time}` : '',
+        p.room ? `القاعة: ${p.room}` : '',
+        shiftLabel
+      ]
+        .filter(Boolean)
+        .join(' | ');
+      notify(`${examType} جديد 📅`, body, 'exam_' + (p.$id || p.subject || ''));
+      return;
+    }
+
+    if (collection === 'lectures' && p.subject && isCreate) {
+      const time = [p.start, p.end].filter(Boolean).join(' - ');
+      const body = [
+        p.subject,
+        dayName,
+        time,
+        p.room ? `القاعة: ${p.room}` : '',
+        shiftLabel
+      ]
+        .filter(Boolean)
+        .join(' | ');
+      notify('محاضرة جديدة 📚', body, 'lecture_' + (p.$id || p.subject || ''));
+      return;
+    }
+
+    if (collection === 'assignments' && isCreate && (p.subject || p.title)) {
+      const kind = p.kind === 'report' ? 'report' : 'assignment';
+      const title = p.title || p.subject || (kind === 'report' ? 'تقرير' : 'واجب');
+      const details = [
+        p.subject && p.title ? `المادة: ${p.subject}` : '',
+        p.dueDate ? `التسليم: ${p.dueDate}` : '',
+        shiftLabel,
+        p.notes || p.description || ''
+      ]
+        .filter(Boolean)
+        .join(' | ');
+      notify(
+        kind === 'report' ? 'تقرير جديد 📄' : 'واجب جديد 📝',
+        `${title}${details ? ' | ' + details : ''}`,
+        'assignment_' + (p.$id || p.subject || p.title || '')
+      );
+    }
+  },
+
+  // Prevent the local Realtime notification from duplicating the OneSignal
+  // push that is generated by the Appwrite Function for the same document.
+  _pushAlreadyHandled(tag) {
+    if (!tag || !window.PushEngine) return false;
+    try {
+      if (window.PushEngine.wasServerNotified && window.PushEngine.wasServerNotified(tag)) {
+        return true;
+      }
+      // Realtime can echo the same document more than once. Do not show the
+      // local notification twice within the dedupe window.
+      if (window.PushEngine.wasLocallyNotified && window.PushEngine.wasLocallyNotified(tag)) {
+        return true;
+      }
+      if (window.PushEngine.markLocalNotification) {
+        window.PushEngine.markLocalNotification(tag);
+      }
+    } catch (e) {
+      // Push is optional; never block the local notification.
+    }
+    return false;
   },
 
   async syncFromAppwrite() {

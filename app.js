@@ -28,6 +28,38 @@ const App = {
     // Initialize Store & Realm DB (seed data if fresh)
     await window.Store.init();
 
+    // Register the notifications service worker early (required on mobile browsers)
+    if (window.NotificationsEngine && window.NotificationsEngine.init) {
+      window.NotificationsEngine.init();
+    }
+
+    // Load OneSignal in the background. It never prompts on its own: the
+    // student must tap the bell button before the browser permission dialog.
+    if (window.PushEngine && window.PushEngine.init) {
+      window.PushEngine.init().catch(() => null);
+
+      // If the first attempt happened while offline, reconnect automatically.
+      window.addEventListener('online', () => {
+        if (window.PushEngine.ready || window.PushEngine.initPromise) return;
+        window.PushEngine.init().catch(() => null);
+      });
+
+      // Mobile browsers do not always fire `online` after a network change.
+      // Retry when the student returns to the app, respecting the cooldown.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        if (window.PushEngine.ready || window.PushEngine.initPromise) return;
+        const retryMs = window.PushEngine.initRetryMs || 60000;
+        if (Date.now() - (window.PushEngine.lastInitAttempt || 0) < retryMs) return;
+        window.PushEngine.init().catch(() => null);
+      });
+    }
+
+    // PWA install prompt, offline status, and update notices
+    if (window.PWA && window.PWA.init) {
+      window.PWA.init();
+    }
+
     // Listen to hash changes
     window.addEventListener('hashchange', () => this.handleRoute());
 
@@ -65,8 +97,10 @@ const App = {
       await window.Landing.render(this.container);
     } else if (hash === '#/student/morning') {
       await window.Student.render(this.container, 'morning');
+      this.syncPushIdentity('student', 'morning');
     } else if (hash === '#/student/evening') {
       await window.Student.render(this.container, 'evening');
+      this.syncPushIdentity('student', 'evening');
     } else if (hash === '#/rep/login') {
       await window.Rep.renderLogin(this.container);
     } else if (hash === '#/rep/dashboard') {
@@ -77,6 +111,7 @@ const App = {
         return;
       }
       await window.Rep.renderDashboard(this.container);
+      this.syncPushIdentity('rep', window.Rep.currentShift || 'morning');
     } else if (hash === '#/admin') {
       const adminSession = window.Auth.getAdminSession();
       if (!adminSession) {
@@ -87,6 +122,15 @@ const App = {
       await window.Admin.render(this.container);
     } else {
       window.location.hash = '#/';
+    }
+  },
+
+  syncPushIdentity(role, shift) {
+    if (!window.PushEngine || !window.PushEngine.identify) return;
+    try {
+      Promise.resolve(window.PushEngine.identify(role, shift)).catch(() => null);
+    } catch (e) {
+      // Push is optional: never break routing.
     }
   },
 

@@ -618,8 +618,16 @@ const Rep = {
   bindDashboardEvents(container) {
     const btnM = container.querySelector('#shift-switch-morning');
     const btnE = container.querySelector('#shift-switch-evening');
-    if (btnM) btnM.onclick = () => { this.currentShift = 'morning'; this.renderDashboard(container); };
-    if (btnE) btnE.onclick = () => { this.currentShift = 'evening'; this.renderDashboard(container); };
+    if (btnM) btnM.onclick = async () => {
+      this.currentShift = 'morning';
+      await this.renderDashboard(container);
+      if (window.App && window.App.syncPushIdentity) window.App.syncPushIdentity('rep', 'morning');
+    };
+    if (btnE) btnE.onclick = async () => {
+      this.currentShift = 'evening';
+      await this.renderDashboard(container);
+      if (window.App && window.App.syncPushIdentity) window.App.syncPushIdentity('rep', 'evening');
+    };
 
     const logoutBtn = container.querySelector('#rep-logout-btn');
     if (logoutBtn) {
@@ -797,7 +805,7 @@ const Rep = {
           <div>
             <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">اليوم *</label>
             <select id="lec-day" class="w-full bg-gray-50 dark:bg-[#18182e] border border-gray-300 dark:border-white/10 rounded-xl px-4 py-2 text-xs text-gray-900 dark:text-white focus:outline-none cursor-pointer">
-              ${[1, 2, 3, 4, 5, 0, 6].map((i) => `<option value="${i}" ${item ? Number(item.day) === i : i === 1 ? 'selected' : ''}>${UI.dayNames[i]}</option>`).join('')}
+              ${[1, 2, 3, 4, 5, 0, 6].map((i) => `<option value="${i}" ${(item ? Number(item.day) === i : i === 1) ? 'selected' : ''}>${UI.dayNames[i]}</option>`).join('')}
             </select>
           </div>
         </div>
