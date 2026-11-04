@@ -178,6 +178,13 @@ const PushEngine = {
         const worker = await this.pickWorker();
         const options = {
           appId: this.appId,
+          // The dashboard is still on "Typical Site", which normally ignores
+          // the custom worker path and looks for /OneSignalSDKWorker.js at the
+          // domain root. This flag is read by the SDK (v16) and makes it honor
+          // serviceWorkerPath/serviceWorkerParam anyway, so the worker can live
+          // under the GitHub Pages /TCM/ subpath.
+          serviceWorkerOverrideForTypical: true,
+          path: '/',
           serviceWorkerPath: worker.sdkPath,
           serviceWorkerParam: { scope: worker.scope },
           allowLocalhostAsSecureOrigin: true,
