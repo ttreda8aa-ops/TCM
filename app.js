@@ -81,6 +81,21 @@ const App = {
       window.UI.toast('تم الحفظ محلياً فقط، تعذرت المزامنة مع السحابة. تحقق من الاتصال.', 'warning', 5000);
     });
 
+    // Re-fetch live data automatically whenever the app returns to the foreground.
+    // Realtime events missed while the tab/PWA was backgrounded are picked up
+    // here, so counts and lists update without any manual refresh button.
+    let lastForegroundSync = 0;
+    const refreshOnForeground = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastForegroundSync < 3000) return;
+      lastForegroundSync = now;
+      window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { source: 'foreground' } }));
+    };
+    document.addEventListener('visibilitychange', refreshOnForeground);
+    window.addEventListener('focus', refreshOnForeground);
+    window.addEventListener('pageshow', refreshOnForeground);
+
     // Run initial route
     await this.handleRoute();
   },

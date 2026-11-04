@@ -130,7 +130,7 @@ const Student = {
         <main class="max-w-6xl mx-auto px-4 sm:px-6 relative z-10">
           ${this.renderSummaryCards({
             lectures: (data.lectures || []).length,
-            exams: (data.exams || []).length,
+            exams: (data.exams || []).filter(e => e.isCompleted !== true).length,
             reports: reportsOnly.length,
             assignments: assignmentsOnly.length,
             completedExams: completedExams.length
