@@ -7,7 +7,7 @@
  * - Focuses/opens the app when a notification is clicked.
  */
 
-const SW_VERSION = '20261106-4';
+const SW_VERSION = '20261106-5';
 const CACHE_VERSION = 'tcm-shell-' + SW_VERSION;
 const OFFLINE_FALLBACK = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">

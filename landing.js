@@ -277,6 +277,7 @@ const Landing = {
         <footer class="relative z-10 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 flex items-center justify-between text-xs text-gray-500">
           <div>
             <span class="text-gray-600 dark:text-gray-400 font-semibold">${settings.platformName || 'المنصة الجامعية'}</span>
+            <span class="mr-2 text-[10px] font-bold text-cyan-700 dark:text-cyan-400" dir="ltr">Made by <span class="font-black">REDA-DEV</span></span>
           </div>
 
           <div class="flex items-center gap-3">
