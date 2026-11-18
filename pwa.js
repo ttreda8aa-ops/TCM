@@ -50,6 +50,11 @@ const PWA = {
     if (this.initialized) return;
     this.initialized = true;
 
+    // Always bind connectivity and update handling — installed PWAs are exactly
+    // the clients that can otherwise stay on an old cached version for days.
+    this.bindConnectivity();
+    this.bindServiceWorkerUpdates();
+
     if (this.isStandalone()) {
       this.hideBanner();
       return;
@@ -63,9 +68,6 @@ const PWA = {
     } else if (this.wasDismissed()) {
       this.hideBanner();
     }
-
-    this.bindConnectivity();
-    this.bindServiceWorkerUpdates();
   },
 
   showBanner(mode) {
@@ -198,6 +200,22 @@ const PWA = {
   bindServiceWorkerUpdates() {
     if (!('serviceWorker' in navigator)) return;
 
+    const hadController = !!navigator.serviceWorker.controller;
+    let refreshing = false;
+
+    // A new worker took control: reload once so the page runs the new JS/CSS
+    // instead of continuing with the previous (possibly stale) bundle.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || refreshing) return;
+      refreshing = true;
+      try {
+        const lastReload = Number(sessionStorage.getItem('uni.sw.reloadedAt') || 0);
+        if (Date.now() - lastReload < 60000) return;
+        sessionStorage.setItem('uni.sw.reloadedAt', String(Date.now()));
+      } catch (e) {}
+      window.location.reload();
+    });
+
     navigator.serviceWorker.ready
       .then((registration) => {
         registration.addEventListener('updatefound', () => {
@@ -207,8 +225,10 @@ const PWA = {
           worker.addEventListener('statechange', () => {
             if (worker.state === 'installed' && navigator.serviceWorker.controller) {
               if (window.UI) {
-                window.UI.toast('تم تنزيل تحديث جديد. أعد فتح الصفحة لتطبيقه.', 'info', 6000);
+                window.UI.toast('جارٍ تطبيق تحديث جديد...', 'info', 3000);
               }
+              // Apply immediately instead of waiting for every tab to close.
+              worker.postMessage({ type: 'SKIP_WAITING' });
             }
           });
         });

@@ -7,19 +7,19 @@
  * - Focuses/opens the app when a notification is clicked.
  */
 
-const SW_VERSION = '20261106-3';
+const SW_VERSION = '20261106-4';
 const CACHE_VERSION = 'tcm-shell-' + SW_VERSION;
 const OFFLINE_FALLBACK = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ط؛ظٹط± ظ…طھطµظ„</title>
+<title>غير متصل</title>
 <style>body{font-family:system-ui,sans-serif;background:#f8fafc;color:#0f172a;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}
 .box{max-width:420px;background:#fff;border:1px solid #e2e8f0;border-radius:20px;padding:32px;box-shadow:0 10px 30px rgba(2,132,199,.12)}
 h1{font-size:20px;margin:0 0 10px}p{color:#475569;line-height:1.8;margin:0 0 18px}
 button{background:linear-gradient(90deg,#0284c7,#9333ea);color:#fff;border:0;border-radius:12px;padding:12px 22px;font-size:15px;font-weight:700;cursor:pointer}</style></head>
-<body><div class="box"><h1>ظ„ط§ ظٹظˆط¬ط¯ ط§طھطµط§ظ„ ط¨ط§ظ„ط¥ظ†طھط±ظ†طھ</h1>
-<p>ط§ظپطھط­ ط§ظ„ظ…ظ†طµط© ظ…ط±ط© ظˆط§ط­ط¯ط© ظˆط£ظ†طھ ظ…طھطµظ„ ط­طھظ‰ ظٹطھظ… ط­ظپط¸ ط§ظ„ط¬ط¯ظˆظ„ ظˆط§ظ„ط§ظ…طھط­ط§ظ†ط§طھ ط¹ظ„ظ‰ ط¬ظ‡ط§ط²ظƒطŒ ط¨ط¹ط¯ظ‡ط§ ط³طھظپطھط­ طھظ„ظ‚ط§ط¦ظٹط§ظ‹ ط¨ط¯ظˆظ† ط¥ظ†طھط±ظ†طھ.</p>
-<button onclick="location.reload()">ط¥ط¹ط§ط¯ط© ط§ظ„ظ…ط­ط§ظˆظ„ط©</button></div></body></html>`;
+<body><div class="box"><h1>لا يوجد اتصال بالإنترنت</h1>
+<p>افتح المنصة مرة واحدة وأنت متصل حتى يتم حفظ الجدول والامتحانات على جهازك، بعدها ستفتح تلقائياً بدون إنترنت.</p>
+<button onclick="location.reload()">إعادة المحاولة</button></div></body></html>`;
 
 // Same-origin app shell. Both layouts are listed because the site is uploaded
 // either as folders (js/, css/) or as flat files in the repository root.
@@ -154,9 +154,7 @@ async function networkFirst(request) {
 
 async function staleWhileRevalidate(request) {
   const cache = await caches.open(CACHE_VERSION);
-  const cached =
-    (await cache.match(request)) ||
-    (await cache.match(request, { ignoreSearch: true }));
+  const cached = await cache.match(request);
 
   const network = fetch(request)
     .then(async (response) => {
@@ -177,6 +175,36 @@ async function staleWhileRevalidate(request) {
   }
 
   return new Response('', { status: 504, statusText: 'Offline' });
+}
+
+// Code and styles must always reflect the latest deploy. Network first, then the
+// last cached copy when offline. This prevents an old script from serving stale
+// data/statistics during a database recovery window.
+async function networkFirstAsset(request) {
+  const cache = await caches.open(CACHE_VERSION);
+  let response = null;
+
+  try {
+    response = await fetch(request);
+  } catch (e) {
+    response = null;
+  }
+
+  if (isCacheable(response)) {
+    await cache.put(request, response.clone());
+    return response;
+  }
+
+  // A 4xx is a real answer from the server (e.g. a removed file); pass it on.
+  if (response && response.status > 0 && response.status < 500) return response;
+
+  // Network down or a proxy/5xx error page: never replace working cached code.
+  const exact = await cache.match(request);
+  if (exact) return exact;
+  const versionless = await cache.match(request, { ignoreSearch: true });
+  if (versionless) return versionless;
+
+  return response || new Response('', { status: 504, statusText: 'Offline' });
 }
 
 self.addEventListener('fetch', (event) => {
@@ -209,6 +237,12 @@ self.addEventListener('fetch', (event) => {
 
   if (request.mode === 'navigate') {
     event.respondWith(networkFirst(request));
+    return;
+  }
+
+  // JS/CSS/manifest: always prefer the network so ?v= updates apply immediately.
+  if (/\.(?:js|css|json|webmanifest)$/i.test(url.pathname)) {
+    event.respondWith(networkFirstAsset(request));
     return;
   }
 
@@ -249,7 +283,7 @@ self.addEventListener('push', (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification(payload.title || 'طھظ†ط¨ظٹظ‡ ط£ظƒط§ط¯ظٹظ…ظٹ ط¬ط¯ظٹط¯ âڑ ï¸ڈ', {
+    self.registration.showNotification(payload.title || 'تنبيه أكاديمي جديد ⚠️', {
       body: payload.body || '',
       icon: './icon-192.png',
       badge: './icon-192.png',

@@ -220,7 +220,7 @@ const Student = {
         iconClass: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20'
       },
       {
-        label: 'الامتحانات',
+        label: 'الامتحانات القادمة',
         value: stats.exams,
         icon: UI.icons.clock,
         iconClass: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
@@ -421,9 +421,9 @@ const Student = {
     const pastExams = [];
 
     sorted.forEach(exam => {
-      const examDate = new Date(`${exam.date}T${exam.time || '00:00'}`);
-      // An exam is considered past if representative marked isCompleted === true OR date has passed
-      if (exam.isCompleted || examDate < now) {
+      // الكارد «المنجزة» يعرض فقط الامتحانات التي علّمها الممثل منتهي (isCompleted === true)
+      // الامتحانات "العادية" (نشطة) تبقى في قائمة القادمة حتى لو مرّ موعدها
+      if (exam.isCompleted === true) {
         pastExams.push(exam);
       } else {
         upcomingExams.push(exam);

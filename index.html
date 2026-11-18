@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ط§ظ„ظ…ظ†طµط© ط§ظ„ط¬ط§ظ…ط¹ظٹط© ط§ظ„ظ…ظˆط­ط¯ط©</title>
-  <meta name="description" content="ظ…ظ†طµط© طھط¹ظ„ظٹظ…ظٹط© ط¬ط§ظ…ط¹ظٹط© ظ…طھظƒط§ظ…ظ„ط© ظ„ط¥ط¯ط§ط±ط© ط§ظ„ط¬ط¯ط§ظˆظ„ ط§ظ„ط¯ط±ط§ط³ظٹط© ظˆط§ظ„ط§ظ…طھط­ط§ظ†ط§طھ ظˆط§ظ„طھظƒط§ظ„ظٹظپ ط§ظ„ط£ظƒط§ط¯ظٹظ…ظٹط©" />
+  <title>المنصة الجامعية الموحدة</title>
+  <meta name="description" content="منصة تعليمية جامعية متكاملة لإدارة الجداول الدراسية والامتحانات والتكاليف الأكاديمية" />
   <meta name="theme-color" content="#0284c7" />
 
   <!-- PWA: installable app + offline support -->
@@ -14,7 +14,7 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="ط§ظ„ظ…ظ†طµط© ط§ظ„ط¬ط§ظ…ط¹ظٹط©" />
+  <meta name="apple-mobile-web-app-title" content="المنصة الجامعية" />
   <meta name="mobile-web-app-capable" content="yes" />
 
   <!-- Google Fonts: Cairo, Tajawal, JetBrains Mono -->
@@ -102,8 +102,28 @@
         css: cssFolder ? 'css/' : ''
       };
       // Bump this value whenever the local CSS/JS files change (cache busting).
-      window.__assetVersion = '?v=20261106-3';
+      window.__assetVersion = '?v=20261106-4';
       document.write('<link rel="stylesheet" href="' + window.__assetPaths.css + 'custom.css' + window.__assetVersion + '" />');
+    })();
+  </script>
+
+  <!-- Apply an updated service worker immediately. This also covers the first
+       visit after a deploy when the previous worker still controls the page. -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      var hadController = !!navigator.serviceWorker.controller;
+      var reloading = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (!hadController || reloading) return;
+        reloading = true;
+        try {
+          var last = Number(sessionStorage.getItem('uni.sw.reloadedAt') || 0);
+          if (Date.now() - last < 60000) return;
+          sessionStorage.setItem('uni.sw.reloadedAt', String(Date.now()));
+        } catch (e) {}
+        window.location.reload();
+      });
     })();
   </script>
 </head>

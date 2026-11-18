@@ -78,7 +78,21 @@ const App = {
       const now = Date.now();
       if (now - (this.lastCloudErrorToast || 0) < 8000) return;
       this.lastCloudErrorToast = now;
-      window.UI.toast('تم الحفظ محلياً فقط، تعذرت المزامنة مع السحابة. تحقق من الاتصال.', 'warning', 5000);
+      window.UI.toast('تم الحفظ محلياً فقط، ستُعاد المزامنة تلقائياً عند عودة السحابة.', 'warning', 5000);
+    });
+
+    // Retry local-only writes as soon as connectivity returns.
+    const flushPendingWrites = () => {
+      if (window.Store && typeof window.Store.flushPendingCloudOps === 'function') {
+        window.Store.flushPendingCloudOps();
+      }
+    };
+    window.addEventListener('online', flushPendingWrites);
+    window.addEventListener('cloud-pending-flushed', (e) => {
+      const synced = e && e.detail ? e.detail.synced : 0;
+      if (synced > 0) {
+        window.UI.toast('تمت مزامنة التعديلات المعلقة مع السحابة ✓', 'success', 4000);
+      }
     });
 
     // Re-fetch live data automatically whenever the app returns to the foreground.
@@ -91,6 +105,9 @@ const App = {
       if (now - lastForegroundSync < 3000) return;
       lastForegroundSync = now;
       window.dispatchEvent(new CustomEvent('uni-data-changed', { detail: { source: 'foreground' } }));
+      if (window.Store && typeof window.Store.flushPendingCloudOps === 'function') {
+        window.Store.flushPendingCloudOps();
+      }
     };
     document.addEventListener('visibilitychange', refreshOnForeground);
     window.addEventListener('focus', refreshOnForeground);

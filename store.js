@@ -129,12 +129,37 @@ const AppwriteSync = {
     if (!this.isAvailable()) return null;
     try {
       const colId = window.AppwriteConfig.collections[collectionName] || collectionName;
-      const res = await window.appwriteDatabases.listDocuments(
-        window.AppwriteConfig.databaseId,
-        colId,
-        queries
-      );
-      return (res.documents || []).map(normalizeCloudDocument);
+      const Query = window.Appwrite && window.Appwrite.Query;
+      const pageSize = 100;
+      const all = [];
+      let offset = 0;
+      let total = Infinity;
+
+      // Appwrite returns 25 rows by default. Read every page so statistics can
+      // never silently cap when a collection grows past the default limit.
+      while (all.length < total) {
+        const pageQueries = [...queries];
+        if (Query && typeof Query.limit === 'function') {
+          pageQueries.push(Query.limit(pageSize), Query.offset(offset));
+        } else {
+          pageQueries.push(`limit(${pageSize})`, `offset(${offset})`);
+        }
+
+        const res = await window.appwriteDatabases.listDocuments(
+          window.AppwriteConfig.databaseId,
+          colId,
+          pageQueries
+        );
+
+        const docs = res.documents || [];
+        total = typeof res.total === 'number' ? res.total : docs.length;
+        all.push(...docs.map(normalizeCloudDocument));
+
+        if (docs.length === 0 || docs.length < pageSize) break;
+        offset += docs.length;
+      }
+
+      return all;
     } catch (e) {
       console.warn(`[Appwrite] listDocuments error on ${collectionName}:`, e.message);
       return null;
@@ -446,6 +471,7 @@ const Store = {
     // Initialize Appwrite Realtime Sync & Background Fetch
     await this.bootstrapLocalContentToCloud();
     this.initAppwriteSync();
+    this._maybeFlushPending();
   },
 
   _emitCloudError(action, error, extra = {}) {
@@ -454,6 +480,141 @@ const Store = {
     window.dispatchEvent(new CustomEvent('cloud-sync-error', {
       detail: { action, message, ...extra }
     }));
+  },
+
+  // ==========================================
+  // Pending cloud writes (offline / outage safe)
+  // ==========================================
+  // Every local change is written to localStorage first. If the Appwrite write
+  // fails (outage, timeout, 5xx), the intent is kept here and retried later, so
+  // the UI and the database converge again instead of silently dropping edits.
+  _pendingKey: 'uni.cloud.pending.v1',
+
+  _readPendingOps() {
+    try {
+      const raw = localStorage.getItem(this._pendingKey);
+      const ops = raw ? JSON.parse(raw) : [];
+      return Array.isArray(ops) ? ops : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
+  _writePendingOps(ops) {
+    try {
+      if (!ops || ops.length === 0) localStorage.removeItem(this._pendingKey);
+      else localStorage.setItem(this._pendingKey, JSON.stringify(ops.slice(-200)));
+    } catch (e) {
+      // Storage may be full; never break the app because of the retry queue.
+    }
+  },
+
+  _removePendingOp(collection, docId) {
+    if (!docId) return;
+    this._writePendingOps(
+      this._readPendingOps().filter((op) => !(op.collection === collection && op.docId === docId))
+    );
+  },
+
+  _isRetryableCloudError(err) {
+    if (!err) return true;
+    const code = Number(err.code || 0);
+    if (!code) return true; // network failure / timeout without an HTTP code
+    return code === 408 || code === 429 || code >= 500;
+  },
+
+  _queueCloudOp(collection, action, docId, data, shift) {
+    if (!docId) return;
+    const ops = this._readPendingOps();
+    const idx = ops.findIndex((op) => op.collection === collection && op.docId === docId);
+    const op = {
+      collection,
+      action,
+      docId,
+      shift: shift || (data && data.shift) || null,
+      data: data || null,
+      ts: Date.now(),
+      attempts: idx >= 0 ? (ops[idx].attempts || 0) : 0
+    };
+    if (idx >= 0) ops[idx] = op;
+    else ops.push(op);
+    this._writePendingOps(ops);
+  },
+
+  // Overlay unsynced local changes on top of the cloud snapshot. Deletes win,
+  // then upserts replace or append by document id. Ops are scoped to one shift
+  // so a morning edit can never leak into the evening portal.
+  _applyPendingOps(collection, rows, shift) {
+    const ops = this._readPendingOps().filter((op) => {
+      if (op.collection !== collection) return false;
+      if (!shift) return true;
+      const opShift = op.shift || (op.data && op.data.shift) || null;
+      return !opShift || opShift === shift;
+    });
+    if (ops.length === 0) return rows;
+    let out = rows.slice();
+    for (const op of ops) {
+      if (op.action === 'delete') {
+        out = out.filter((row) => row.id !== op.docId);
+        continue;
+      }
+      const idx = out.findIndex((row) => row.id === op.docId);
+      if (idx >= 0) out[idx] = { ...out[idx], ...(op.data || {}), id: op.docId };
+      else out.push({ ...(op.data || {}), id: op.docId });
+    }
+    return out;
+  },
+
+  _maybeFlushPending() {
+    const now = Date.now();
+    if (now - (this._lastFlushAttempt || 0) < 15000) return;
+    this._lastFlushAttempt = now;
+    this.flushPendingCloudOps().catch(() => {});
+  },
+
+  async flushPendingCloudOps() {
+    if (!AppwriteSync.isAvailable()) {
+      return { ok: false, remaining: this._readPendingOps().length };
+    }
+    const ops = this._readPendingOps();
+    if (ops.length === 0) return { ok: true, synced: 0, remaining: 0 };
+
+    const remaining = [];
+    let synced = 0;
+
+    for (const op of ops) {
+      try {
+        if (op.action === 'delete') {
+          try {
+            await AppwriteSync.deleteDocument(op.collection, op.docId);
+          } catch (err) {
+            if (!err || err.code !== 404) throw err;
+          }
+        } else {
+          try {
+            await AppwriteSync.updateDocument(op.collection, op.docId, op.data || {});
+          } catch (err) {
+            if (err && err.code === 404) {
+              await AppwriteSync.createDocument(op.collection, op.docId, op.data || {});
+            } else {
+              throw err;
+            }
+          }
+        }
+        synced += 1;
+      } catch (err) {
+        op.attempts = (op.attempts || 0) + 1;
+        remaining.push(op);
+      }
+    }
+
+    this._writePendingOps(remaining);
+    if (synced > 0) {
+      window.dispatchEvent(new CustomEvent('cloud-pending-flushed', {
+        detail: { synced, remaining: remaining.length }
+      }));
+    }
+    return { ok: remaining.length === 0, synced, remaining: remaining.length };
   },
 
   _isValidDocId(id) {
@@ -588,10 +749,12 @@ const Store = {
         cloudDocs = [];
       }
 
-      if (cloudDocs.length > 0) continue;
+      const cloudIds = new Set(cloudDocs.map((doc) => doc.id));
 
       for (const row of local[collectionName]) {
         if (!replace && (!row.id || DEMO_CONTENT_IDS.has(row.id))) continue;
+        // Upload only rows the cloud is missing; never duplicate existing docs.
+        if (!replace && cloudIds.has(row.id)) continue;
         try {
           await AppwriteSync.createDocument(
             collectionName,
@@ -769,7 +932,7 @@ const Store = {
       const applyPerShift = (docs, collectionName) => {
         if (!docs) return;
         ['morning', 'evening'].forEach((shift) => {
-          const rows = docs.filter((doc) => doc.shift === shift);
+          const rows = this._applyPendingOps(collectionName, docs.filter((doc) => doc.shift === shift), shift);
           const schema = this._getSchemaName(shift, collectionName);
           localRealm.write((r) => r.setAll(schema, rows));
         });
@@ -1067,9 +1230,14 @@ const Store = {
         ]);
 
         if (cloudLec !== null && cloudExm !== null && cloudAsg !== null) {
-          const lectures = cloudLec.filter((item) => item.shift === shift);
-          const exams = cloudExm.filter((item) => item.shift === shift);
-          const assignments = cloudAsg.filter((item) => item.shift === shift);
+          // Retry unsynced writes in the background; the merge below keeps the
+          // current render correct even if the retry fails.
+          this._maybeFlushPending();
+          // Overlay edits made while the database was unreachable so the UI and
+          // statistics stay consistent until the retry queue reaches Appwrite.
+          const lectures = this._applyPendingOps('lectures', cloudLec.filter((item) => item.shift === shift), shift);
+          const exams = this._applyPendingOps('exams', cloudExm.filter((item) => item.shift === shift), shift);
+          const assignments = this._applyPendingOps('assignments', cloudAsg.filter((item) => item.shift === shift), shift);
 
           // The cloud is authoritative once reachable: bootstrap has already uploaded
           // any legacy local data before the first render, so mirroring empty results
@@ -1153,17 +1321,27 @@ const Store = {
           this._isValidDocId(created.id) ? created.id : undefined,
           created
         );
+        this._removePendingOp(collection, created.id);
       } catch (err) {
         if (err && err.code === 409) {
           try {
             await AppwriteSync.updateDocument(collection, created.id, created);
+            this._removePendingOp(collection, created.id);
           } catch (updateErr) {
+            if (this._isRetryableCloudError(updateErr)) {
+              this._queueCloudOp(collection, 'upsert', created.id, created, shift);
+            }
             this._emitCloudError('addItem', updateErr, { shift, collection });
           }
         } else {
+          if (this._isRetryableCloudError(err)) {
+            this._queueCloudOp(collection, 'upsert', created.id, created, shift);
+          }
           this._emitCloudError('addItem', err, { shift, collection });
         }
       }
+    } else {
+      this._queueCloudOp(collection, 'upsert', created.id, created, shift);
     }
 
     // Redraw only after the cloud write settles, to avoid a stale fetch overwriting local data.
@@ -1190,18 +1368,28 @@ const Store = {
     if (AppwriteSync.isAvailable()) {
       try {
         await AppwriteSync.updateDocument(collection, id, sanitizedPatch);
+        this._removePendingOp(collection, id);
       } catch (err) {
         // Legacy local-only items may not exist in the cloud yet.
         if (err && err.code === 404 && this._isValidDocId(id) && updated) {
           try {
             await AppwriteSync.createDocument(collection, id, updated);
+            this._removePendingOp(collection, id);
           } catch (createErr) {
+            if (this._isRetryableCloudError(createErr)) {
+              this._queueCloudOp(collection, 'upsert', id, updated, shift);
+            }
             this._emitCloudError('updateItem', createErr, { shift, collection });
           }
         } else {
+          if (updated && this._isRetryableCloudError(err)) {
+            this._queueCloudOp(collection, 'upsert', id, updated, shift);
+          }
           this._emitCloudError('updateItem', err, { shift, collection });
         }
       }
+    } else if (updated) {
+      this._queueCloudOp(collection, 'upsert', id, updated, shift);
     }
 
     // Redraw only after the cloud write settles.
@@ -1219,9 +1407,19 @@ const Store = {
     if (AppwriteSync.isAvailable()) {
       try {
         await AppwriteSync.deleteDocument(collection, id);
+        this._removePendingOp(collection, id);
       } catch (err) {
-        if (!err || err.code !== 404) this._emitCloudError('deleteItem', err, { shift, collection });
+        if (!err || err.code !== 404) {
+          if (this._isRetryableCloudError(err)) {
+            this._queueCloudOp(collection, 'delete', id, null, shift);
+          }
+          this._emitCloudError('deleteItem', err, { shift, collection });
+        } else {
+          this._removePendingOp(collection, id);
+        }
       }
+    } else {
+      this._queueCloudOp(collection, 'delete', id, null, shift);
     }
 
     // Redraw only after the cloud delete settles; otherwise a stale fetch can restore the item.
